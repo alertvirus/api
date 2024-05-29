@@ -32,6 +32,14 @@ from langchain_core.output_parsers import JsonOutputParser
 
 local_llm = "llama3"
 os.environ["TAVILY_API_KEY"] = ""
+
+model_name = "all-MiniLM-L6-v2.gguf2.f16.gguf"
+gpt4all_kwargs = {'allow_download': 'True'}
+embeddings = GPT4AllEmbeddings(
+                model_name=model_name,
+                gpt4all_kwargs=gpt4all_kwargs
+            )
+
 # LLM
 retrieval_grader_llm = ChatOllama(model=local_llm, format="json", temperature=0)
 
@@ -180,7 +188,6 @@ def upload_file():
     if uploaded_file.filename == "":
         return jsonify({"error": "No selected file"}), 400
     filename = uploaded_file.filename
-    print(filename)
     # Secure filename
     filename = secure_filename(uploaded_file.filename)
 
@@ -191,7 +198,6 @@ def upload_file():
     file_path = temp_file.name
 
     vectorDbname = add_file_to_db(filename)
-    print(vectorDbname)
     
     process_pdf(file_path, vectorDbname)
 
@@ -206,7 +212,8 @@ def query_file():
         query_persist_directory = request.json.get('vectordbName')
         #proompt = request.json.get('proompt')
         
-        persist_directory = f"./vectordb/{query_persist_directory}"
+        global vectorDb_Directory 
+        vectorDb_Directory = f"vectordb/{query_persist_directory}"
         #save query to db
         add_chats(query, 'user', query, documentId)
 
@@ -310,7 +317,6 @@ def delete_rows(table_name, condition):
 
     # Execute the DELETE statement
     delete_query = f"DELETE FROM {table_name} WHERE {condition}"
-    print(delete_query)
     cursor.execute(delete_query)
 
     # Commit the changes to the database
@@ -361,21 +367,21 @@ def process_pdf(file_path,vectorDbname):
     pages = loader.load_and_split()
 
     text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-    chunk_size=250, chunk_overlap=0
+    chunk_size=250, chunk_overlap=100
     )
 
     doc_splits = text_splitter.split_documents(pages)
+    
 
    # Embed and store the texts
     persist_directory = f"./vectordb/{vectorDbname}"
 
     vectordb = Chroma.from_documents(documents=doc_splits,
-                                 embedding=GPT4AllEmbeddings(),
+                                 embedding=embeddings,
                                  persist_directory=persist_directory,
                                  collection_name="rag-chroma")
-    vectordb.persist()
-    vectordb = None
-
+    
+   
 def getWorkflow():
     workflow = StateGraph(GraphState)
 
@@ -408,6 +414,7 @@ def getWorkflow():
         {
             "not supported": "generate",
             "useful": END,
+            "exit" : END,
             "not useful": "websearch",
         },
     )
@@ -420,7 +427,6 @@ def generate_answer(query):
     for output in app.stream(inputs):
         for key, value in output.items():
             pprint(f"Finished running: {key}:")
-    #pprint(value["generation"])
     return value["generation"]
 
 
@@ -439,10 +445,10 @@ def retrieve(state):  #added retreiver
     print("---RETRIEVE---")
     question = state["question"]
 
-    vectordb = Chroma(persist_directory=vectorDb_Directory,
-                  embedding_function=GPT4AllEmbeddings())
+    vectordb = Chroma(collection_name="rag-chroma",persist_directory=vectorDb_Directory,
+                  embedding_function=embeddings)
     
-    retriever = vectordb.as_retriever(search_kwargs={"k": 2})
+    retriever = vectordb.as_retriever()
 
     # Retrieval
     documents = retriever.invoke(question)
@@ -544,9 +550,7 @@ def route_question(state):         ##added question_router
 
     print("---ROUTE QUESTION---")
     question = state["question"]
-    print(question)
     source = question_router.invoke({"question": question})
-    print(source)
     print(source["datasource"])
     if source["datasource"] == "web_search":
         print("---ROUTE QUESTION TO WEB SEARCH---")
@@ -619,12 +623,11 @@ def grade_generation_v_documents_and_question(state):    #added hallucination_gr
         else:
             print("---DECISION: GENERATION DOES NOT ADDRESS QUESTION---")
             return "not useful"
+    elif grade == "I don't know":
+        return "exit"
     else:
-        print("---DECISION: GENERATION IS NOT GROUNDED IN DOCUMENTS, RE-TRY---")
+        pprint("---DECISION: GENERATION IS NOT GROUNDED IN DOCUMENTS, RE-TRY---")
         return "not supported"
-
-
-
 
 
 
